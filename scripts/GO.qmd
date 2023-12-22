@@ -1,0 +1,268 @@
+---
+title: "GO analysis"
+date: today
+author: Jelmer Poelstra
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+    fig-dpi: 300
+knitr:
+  opts_chunk: 
+    message: FALSE
+    warning: FALSE
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+# Load packages
+pkgs <- c("clusterProfiler", "enrichplot", "ggpubr", "here", "tidyverse")
+pacman::p_load(char = pkgs)
+
+# Source script with helper functions
+source(here("mcic-scripts/rnaseq/rfuns/enrich_funs.R"))
+source(here("mcic-scripts/rnaseq/rfuns/DE_funs.R"))
+
+# Settings
+set.seed(1) # Needed for reproducible GSEA results due to permutations
+
+# Define input files
+DE_file <- here("results/tracy/DE.tsv")
+go_map_file <- here("results/GO/GO_map.tsv")   # Created by 'scripts/GO_prep.R'
+counts_file <- here("results/DE/norm_mat.tsv") # Created by 'scripts/count_prep.R'
+meta_file <- here("metadata/meta.tsv")         # Created by 'scripts/count_prep.R'
+annot_file <- here("data/ref/arabi_annot.tsv") # Created by 'scripts/count_prep.R'
+```
+
+```{r}
+# Read and prep input files
+DE_res <- read_tsv(DE_file, show_col_types = FALSE) |>
+  mutate(isDE = ifelse(padj < 0.05, TRUE, FALSE))
+go_map <- read_tsv(go_map_file, show_col_types = FALSE)
+norm_mat <- read.delim(counts_file)
+meta <- read.delim(meta_file, header = TRUE, colClasses = c("character", rep("factor", 3)))
+annot <- read.delim(annot_file)
+```
+
+```{r}
+# Get a vector with the contrasts
+contrasts <- unique(DE_res$contrast)
+```
+
+## GO overrepresentation analysis
+
+```{r}
+# Run the analysis for all contrasts, separately for up- and downregulated genes
+combs <- expand_grid(contrasts, DE_dirs = c("down", "up"))
+enrich_res <- map2_dfr(.x = combs$contrasts, .y = combs$DE_dirs, .f = run_enrich,
+                       DE_res = DE_res, cat_map = go_map, return_df = TRUE)
+```
+
+```{r}
+# Check defense categories
+go_map |> filter(grepl("defense", description)) |> count(description)
+enrich_res |> filter(grepl("defense", description))
+```
+
+### Cleveland's dotplots
+
+The plots below only show terms for which at least one contrast/DE-direction has p-value below 0.001, to make it more manageable. The numbers in the circles are the number of DEGs annotated with the GO term.
+
+-   Only show Biological Processes terms for all contrasts and both DE directions:
+
+```{r}
+enrich_res |>
+  filter(ontology == "BP") |>
+  filter(any(padj < 0.001), .by = "category") |> 
+  cdotplot(facet_var1 = "DE_direction", facet_var2 = "contrast",
+           ylab_size = 7, add_cat_id = FALSE,
+           x_var = "median_lfc", fill_var = "padj_log")
+```
+
+-   Same but showing the P-value along the x-axis, and fill color by median LFC:
+
+```{r}
+enrich_res |>
+  filter(ontology == "BP") |>
+  filter(any(padj < 0.001), .by = "category") |> 
+  cdotplot(facet_var1 = "DE_direction", facet_var2 = "contrast",
+           ylab_size = 7, add_cat_id = FALSE)
+```
+
+-   Same but showing fold-enrichment along the x-axis:
+
+```{r}
+enrich_res |>
+  filter(ontology == "BP") |>
+  filter(any(padj < 0.001), .by = "category") |> 
+  cdotplot(facet_var1 = "DE_direction", facet_var2 = "contrast",
+           ylab_size = 7, add_cat_id = FALSE,
+           x_var = "fold_enrich")
+```
+
+-   Only show GO terms enriched in downregulated genes, for all contrasts and ontologies:
+
+```{r}
+enrich_res |>
+  filter(DE_direction == "down") |>
+  filter(any(padj < 0.001), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_var2 = "contrast",
+           ylab_size = 7, add_cat_id = FALSE,
+           x_var = "median_lfc", fill_var = "padj_log")
+```
+
+-   All contrasts, ontologies, and DE directions, but even more stringent p-value filter:
+
+```{r}
+enrich_res |>
+  filter(any(padj < 0.00001), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_var2 = "contrast",
+           ylab_size = 7, add_cat_id = FALSE,
+           x_var = "median_lfc", fill_var = "padj_log")
+```
+
+-   Show a single contrast:
+
+```{r}
+enrich_res |>
+  filter(contrast == contrasts[2]) |>
+  filter(any(padj < 0.01), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_to_columns = FALSE,
+           x_var = "median_lfc", fill_var = "padj_log",
+           point_size = 7)
+```
+
+### Heatmap-style plots
+
+```{r}
+enrich_res |>
+  filter(any(padj < 0.01), .by = "category") |>
+  filter(contrast %in% c(contrasts[2], contrasts[3])) |>
+  enrichplot(facet_var1 = "ontology", fill_var = "median_lfc")
+```
+
+-   All contrasts, ontologies, and DE directions, but even more stringent p-value filter:
+
+```{r}
+enrich_res |>
+  filter(any(padj < 0.00001), .by = "category") |>
+  enrichplot(facet_var1 = "ontology",
+             fill_var = "median_lfc", xlab_size = 11)
+```
+
+### Plot expression levels for genes in enriched GO terms
+
+```{r}
+GO_pheat(GO_cat = "GO:0003700", contrast = "Xtu_vs_mock", DE_direction = "up",
+         GO_res = enrich_res, meta_df = meta, count_mat = norm_mat, annot_df = annot,
+         groups = "treatment")
+
+GO_pheat(GO_cat = "GO:0003700", contrast = "Xtu_vs_mock", DE_direction = "up",
+         GO_res = enrich_res, meta_df = meta, count_mat = norm_mat, annot_df = annot,
+         mean_by = "treatment")
+```
+
+## enrichplot package functions (single comparison)
+
+```{r}
+# Select a focal contrast
+fcontrast <- contrasts[3]
+```
+
+```{r}
+# Run ClusterProfiler for a single contrast
+# NOTE: Not separating by DE direction here, using all DE genes regardless of direction
+clustprof_res <- run_enrich(contrast = fcontrast,
+                            DE_res = DE_res, cat_map = go_map,
+                            DE_direction = "either")
+
+# Create a vector with log2foldchange values for each gene, used in some of the graphs
+lfc_vec <- DE_res |> filter(contrast == fcontrast) |> pull(lfc)
+names(lfc_vec) <- DE_res |> filter(contrast == fcontrast) |> pull(gene)
+```
+
+```{r}
+cnetplot(clustprof_res,
+         node_label = "category",
+         showCategory = 20,
+         color.params = list(foldChange = lfc_vec),
+         cex_category = 0.5,
+         cex_label_category = 0.7)
+```
+
+```{r}
+heatplot(clustprof_res, showCategory = 10,
+         foldChange = lfc_vec)
+```
+
+```{r}
+treeplot(pairwise_termsim(clustprof_res))
+```
+
+```{r}
+emapplot(pairwise_termsim(clustprof_res),
+         cex_label_category = 0.7)
+```
+
+```{r}
+upsetplot(clustprof_res)
+```
+
+## GSEA analysis
+
+```{r}
+# For GSEA, all genes should be included, regardless of DE status or DE direction
+gsea_res <- map_dfr(.x = contrasts, .f = run_gsea,
+                    DE_res = DE_res, cat_map = go_map, return_df = TRUE)
+```
+
+### Multi-contrast plots
+
+```{r}
+gsea_res |>
+  filter(any(padj < 0.0001), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_var2 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           ylab_size = 7, add_cat_id = FALSE, label_var = NULL, point_size = 3)
+
+gsea_res |>
+  filter(ontology == "BP") |>
+  filter(any(padj < 0.0001), .by = "category") |> 
+  cdotplot(facet_var1 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           ylab_size = 7, add_cat_id = FALSE, label_var = NULL, point_size = 4)
+```
+
+```{r}
+gsea_res |>
+  filter(any(padj < 0.0001), .by = "category") |>
+  enrichplot(facet_var1 = "ontology", fill_var = "median_lfc",
+             xlab_size = 10, add_cat_id = FALSE, ylab_size = 9)
+```
+
+### enrichplot plots
+
+```{r}
+# Specify a focal contrast
+fcontrast <- contrasts[2]
+
+# Run GSEA for one contrast, and keep gsea format for plots
+gsea_res <- run_gsea(contrast = fcontrast, DE_res = DE_res, cat_map = go_map)
+```
+
+```{r}
+ridgeplot(gsea_res) +
+  theme(axis.text.y = element_text(size = 10))
+```
+
+```{r}
+upsetplot(gsea_res)
+```
+
+```{r}
+treeplot(pairwise_termsim(gsea_res))
+```

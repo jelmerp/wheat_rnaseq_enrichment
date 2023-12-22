@@ -1,0 +1,245 @@
+---
+title: "GO analysis with Arabidopsis orthologs"
+date: today
+author: Jelmer Poelstra
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+    fig-dpi: 300
+    df-print: paged
+knitr:
+  opts_chunk: 
+    message: FALSE
+    warning: FALSE
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+# Load packages
+pkgs <- c("clusterProfiler", "enrichplot", "org.At.tair.db",
+          "ggpubr", "here", "tidyverse", "readxl")
+pacman::p_load(char = pkgs)
+
+# Source script with helper functions
+source(here("mcic-scripts/rnaseq/rfuns/enrich_funs.R"))
+source(here("mcic-scripts/rnaseq/rfuns/DE_funs.R"))
+
+# Define input files
+DE_file <- here("results/tracy/DE.tsv")
+counts_file <- here("results/DE/norm_mat.tsv") # Created by 'scripts/count_prep.R'
+meta_file <- here("metadata/meta.tsv")         # Created by 'scripts/count_prep.R'
+annot_file <- here("data/ref/Chinese Spring Genome.xlsx")
+GO_ORA_file <- here("results/GO/GO_ORA_res.tsv")
+GO_GSEA_file <- here("results/GO/GO_GSEA_res.tsv")
+```
+
+```{r}
+# Read and prep input files
+
+# Metadata
+meta <- read.delim(meta_file, header = TRUE, colClasses = c("character", rep("factor", 3)))
+
+# Gene annotation
+annot <- read_xlsx(annot_file) |>
+  dplyr::select(gene = locusName,
+         arabi_id = `Best-hit-arabi-name`,
+         arabi_name = `Best-hit-arabi-defline`) |>
+  dplyr::filter(!is.na(arabi_id)) |>
+  distinct(gene, .keep_all = TRUE)
+
+annot_heatmap <- annot |>
+  dplyr::select(arabi_id, arabi_name) |>
+  distinct(arabi_id, .keep_all = TRUE) |>
+  column_to_rownames("arabi_id")
+
+# DE results
+DE_res <- read_tsv(DE_file, show_col_types = FALSE) |>
+  mutate(isDE = ifelse(padj < 0.05, TRUE, FALSE)) |>
+  left_join(annot, by = "gene") |>
+  dplyr::rename(gene_wheat = gene) |>
+  mutate(gene = ifelse(!is.na(arabi_id), arabi_id, gene_wheat))
+
+# Normalized count matrix
+# NOTE: Because Arabidopsis genes often correspond to multiple wheat genes,
+#       in order to plot gene expression levels for genes in certain GO categories,
+#       we'll have to compute means across such 'duplicated' genes
+# Doing this with the normalized matrix for now -- may not be the best way
+norm_mat <- read.delim(counts_file) |> 
+  rownames_to_column("gene") |>
+  left_join(annot |> dplyr::select(-arabi_name), by = "gene") |>
+  dplyr::rename(gene_wheat = gene) |>
+  mutate(gene = ifelse(!is.na(arabi_id), arabi_id, gene_wheat)) |>
+  pivot_longer(cols = -c(gene_wheat, arabi_id, gene),
+               names_to = "sample", values_to = "count") |>
+  summarize(count = mean(count), .by = c(gene, sample)) |> 
+  pivot_wider(id_cols = "gene", names_from = "sample", values_from = "count") |>
+  column_to_rownames("gene") |>
+  as.matrix()
+
+# GO results
+GO_ORA_res <- read_tsv(GO_ORA_file, show_col_types = FALSE)
+GO_GSEA_res <- read_tsv(GO_GSEA_file, show_col_types = FALSE)
+
+# Get a vector with the contrasts
+contrasts <- unique(DE_res$contrast)
+```
+
+## GO overrepresentation analysis
+
+```{r}
+# Check defense categories
+GO_ORA_res |> filter(sig, grepl("defense", description))
+```
+
+### Cleveland's dotplots
+
+The plots below only show terms for which at least one contrast/DE-direction has p-value below 0.001, to make it more manageable. The numbers in the circles are the number of DEGs annotated with the GO term.
+
+-   Only show Biological Processes terms for all contrasts and each DE direction:
+
+```{r, fig.height=7}
+GO_ORA_res |>
+  filter(ontology == "BP", DE_direction == "up") |>
+  filter(any(padj < 1e-8), .by = "category") |> 
+  cdotplot(facet_var1 = "DE_direction", facet_var2 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           ylab_size = 7)
+
+GO_ORA_res |>
+  filter(ontology == "BP", DE_direction == "down") |>
+  filter(any(padj < 1e-8), .by = "category") |> 
+  cdotplot(facet_var1 = "DE_direction", facet_var2 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           ylab_size = 9)
+```
+
+-   All contrasts, ontologies, and DE directions, but even more stringent p-value filter:
+
+```{r, fig.height=7}
+GO_ORA_res |>
+  filter(any(padj < 1e-15), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_var2 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           ylab_size = 7)
+```
+
+### Heatmap-style plots
+
+```{r, fig.height=7}
+GO_ORA_res |>
+  filter(any(padj < 1e-8), .by = "category") |>
+  filter(contrast %in% c(contrasts[2], contrasts[3])) |>
+  enrichplot(facet_var1 = "ontology", fill_var = "median_lfc",
+             ylab_size = 8)
+```
+
+-   All contrasts, ontologies, and DE directions, but even more stringent p-value filter:
+
+```{r, fig.height=7}
+GO_ORA_res |>
+  filter(any(padj < 1e-15), .by = "category") |>
+  enrichplot(facet_var1 = "ontology", fill_var = "median_lfc",
+             xlab_size = 9, xlab_angle = 90, ylab_size = 8, countlab_size = 1.5)
+```
+
+### Plot expression levels for genes in enriched GO terms
+
+```{r}
+GO_ORA_res |>
+  filter(sig, grepl("defense", description)) |>
+  dplyr::select(contrast, DE_direction, padj, n_DE_in_cat, category, description) |>
+  filter(category == "GO:0042742")
+```
+
+```{r, fig.height=7}
+GO_pheat(GO_cat = "GO:0042742", contrast = "Xtu_vs_mock", DE_direction = "up",
+         GO_res = GO_ORA_res, meta_df = meta,count_mat = norm_mat,
+         annot_df = annot_heatmap, groups = "treatment")
+
+GO_pheat(GO_cat = "GO:0042742", contrast = "Xtu_vs_mock", DE_direction = "up",
+         GO_res = GO_ORA_res, meta_df = meta,count_mat = norm_mat,
+         annot_df = annot_heatmap, mean_by = "treatment")
+```
+
+```{r, fig.height=7}
+GO_pheat(GO_cat = "GO:0042742", contrast = "Xtt_vs_mock", DE_direction = "up",
+         GO_res = GO_ORA_res, meta_df = meta, count_mat = norm_mat,
+         mean_by = "treatment", show_rownames = FALSE)
+```
+
+## GSEA analysis
+
+### Multi-contrast plots
+
+-   Only show Biological Processes terms for all contrasts,
+    p-value < 1e-4:
+
+```{r, fig.height=7}
+GO_GSEA_res |>
+  filter(ontology == "BP") |>
+  filter(any(padj < 1e-4), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_var2 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           label_var = NULL, ylab_size = 7, point_size = 4)
+```
+
+```{r, fig.height=7}
+GO_GSEA_res |>
+  filter(ontology == "BP") |>
+  filter(any(padj < 1e-4), .by = "category") |>
+  enrichplot(facet_var1 = "ontology", fill_var = "median_lfc",
+             xlab_size = 10, ylab_size = 9, xlab_angle = 90)
+```
+
+- Show all ontologies and all contrasts, p-value < 1e-8:
+
+```{r, fig.height=7}
+GO_GSEA_res |>
+  filter(any(padj < 1e-8), .by = "category") |> 
+  cdotplot(facet_var1 = "ontology", facet_var2 = "contrast",
+           x_var = "median_lfc", fill_var = "padj_log",
+           label_var = NULL, ylab_size = 7, point_size = 3)
+```
+
+```{r, fig.height=7}
+GO_GSEA_res |>
+  filter(any(padj < 1e-8), .by = "category") |>
+  enrichplot(facet_var1 = "ontology", fill_var = "median_lfc",
+             xlab_size = 10, ylab_size = 9, xlab_angle = 90)
+```
+
+### enrichplot package plots
+
+```{r}
+# Specify a focal contrast
+fcontrast <- contrasts[2]
+
+# Run GSEA for one contrast, and keep gsea format for plots
+set.seed(1)
+GO_GSEA_cp <- run_gsea(contrast = fcontrast, DE_res = DE_res,
+                       OrgDb = "org.At.tair.db", keyType = "TAIR",
+                       allow_dups = TRUE)
+```
+
+- Ridgeline plot:
+
+```{r}
+ridgeplot(GO_GSEA_cp) +
+  theme(axis.text.y = element_text(size = 10))
+```
+
+- Upset plot:
+
+```{r}
+upsetplot(GO_GSEA_cp)
+```
+
+```{r}
+# Tree plot is not working
+#treeplot(pairwise_termsim(GO_GSEA_cp))
+```

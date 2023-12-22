@@ -1,0 +1,16 @@
+sample	treatment	species	mutation
+Mock_R1	Mock_R1	Mock	Mock	Mock
+Mock_R2	Mock_R2	Mock	Mock	Mock
+Mock_R3	Mock_R3	Mock	Mock	Mock
+Xtt_R1	Xtt_R1	Xtt	Xtt	wt
+Xtt_R2	Xtt_R2	Xtt	Xtt	wt
+Xtt_R3	Xtt_R3	Xtt	Xtt	wt
+XttDxop_R1	XttDxop_R1	XttDxop	Xtt	DeltaXop
+XttDxop_R2	XttDxop_R2	XttDxop	Xtt	DeltaXop
+XttDxop_R3	XttDxop_R3	XttDxop	Xtt	DeltaXop
+Xtu_R1	Xtu_R1	Xtu	Xtu	wt
+Xtu_R2	Xtu_R2	Xtu	Xtu	wt
+Xtu_R3	Xtu_R3	Xtu	Xtu	wt
+XtuXopAL1_R1	XtuXopAL1_R1	XtuXopAL1	Xtu	PlusXop
+XtuXopAL1_R2	XtuXopAL1_R2	XtuXopAL1	Xtu	PlusXop
+XtuXopAL1_R3	XtuXopAL1_R3	XtuXopAL1	Xtu	PlusXop
